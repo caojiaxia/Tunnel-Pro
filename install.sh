@@ -1,12 +1,22 @@
 #!/bin/bash
 
-# Tunnel-Pro Sing-box 纯净版
+# Tunnel-Pro Sing-box 纯净版 - BBR 加速集成
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
 # --- 1. 辅助函数 ---
+enable_bbr() {
+    echo -e "${BLUE}>>> 正在启用 BBR 加速...${NC}"
+    if ! lsmod | grep -q bbr; then
+        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        sysctl -p >/dev/null 2>&1
+    fi
+    echo -e "${GREEN}>>> BBR 已启用。${NC}"
+}
+
 print_final_info() {
     echo -e "\n${YELLOW}==============================================${NC}"
-    echo -e "${GREEN}部署完成！请务必检查以下设置：${NC}"
+    echo -e "${GREEN}部署完成！BBR 加速已启用。${NC}"
     echo -e "${WHITE}1. Cloudflare 后台设置 URL: ${CYAN}http://127.0.0.1:$NAT_PORT${NC}"
     echo -e "${WHITE}2. 路径: ${CYAN}$PATH_WS${NC}"
     echo -e "----------------------------------------------"
@@ -15,35 +25,14 @@ print_final_info() {
     echo -e "${YELLOW}==============================================${NC}"
 }
 
-# --- 2. Nginx 强制接管 ---
-force_nginx_config() {
-    systemctl stop nginx >/dev/null 2>&1
-    rm -rf /etc/nginx/conf.d/* /etc/nginx/nginx.conf
-    cat <<EOF > /etc/nginx/nginx.conf
-user www-data;
-worker_processes auto;
-events { worker_connections 1024; }
-http { include /etc/nginx/conf.d/*.conf; }
-EOF
-    cat <<EOF > /etc/nginx/conf.d/tunnel.conf
-server {
-    listen $NAT_PORT;
-    location $PATH_WS {
-        proxy_pass http://127.0.0.1:$BACKEND_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-    }
-}
-EOF
-    systemctl start nginx
-}
-
-# --- 3. Sing-box 部署逻辑 ---
+# --- 2. 部署逻辑 (包含 BBR 和 Sing-box) ---
 deploy_singbox() {
     echo -e "${BLUE}>>> 正在部署 Sing-box 核心...${NC}"
     apt update -y && apt install -y nginx curl wget jq net-tools psmisc >/dev/null 2>&1
+    
+    # 开启 BBR
+    enable_bbr
+    
     curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
     chmod +x /usr/local/bin/cloudflared
 
@@ -66,7 +55,28 @@ WantedBy=multi-user.target
 EOF
     systemctl daemon-reload && systemctl enable --now sing-box
 
-    force_nginx_config
+    # Nginx 强制接管逻辑
+    systemctl stop nginx >/dev/null 2>&1
+    rm -rf /etc/nginx/conf.d/* /etc/nginx/nginx.conf
+    cat <<EOF > /etc/nginx/nginx.conf
+user www-data;
+worker_processes auto;
+events { worker_connections 1024; }
+http { include /etc/nginx/conf.d/*.conf; }
+EOF
+    cat <<EOF > /etc/nginx/conf.d/tunnel.conf
+server {
+    listen $NAT_PORT;
+    location $PATH_WS {
+        proxy_pass http://127.0.0.1:$BACKEND_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+    }
+}
+EOF
+    systemctl start nginx
 
     cat <<EOF > /etc/systemd/system/cloudflared.service
 [Unit]
@@ -82,11 +92,13 @@ EOF
     print_final_info
 }
 
-# --- 4. 诊断与卸载 ---
+# --- 3. 诊断与菜单 ---
 diagnose() {
     echo -e "\n${BLUE}>>> 链路状态诊断:${NC}"
     systemctl status cloudflared --no-pager | grep Active
     netstat -tulpn | grep -E 'nginx|sing-box'
+    # 检查 BBR 状态
+    sysctl net.ipv4.tcp_congestion_control
 }
 
 uninstall() {
@@ -96,14 +108,11 @@ uninstall() {
     echo -e "${GREEN}卸载完成。${NC}"
 }
 
-# --- 5. 纵向排列菜单 ---
-echo -e "${BLUE}============================================"
-echo -e "      Tunnel-Pro Sing-box 纯净版"
-echo -e "============================================${NC}"
-echo -e "${BLUE}1.${NC} 部署 Sing-box"
-echo -e "${BLUE}2.${NC} 链路诊断"
-echo -e "${BLUE}3.${NC} 彻底卸载"
-echo -e "${BLUE}4.${NC} 退出程序"
+echo -e "${BLUE}================ Tunnel-Pro BBR增强版 ================${NC}"
+echo -e "1. 部署 Sing-box (自动开启 BBR)"
+echo -e "2. 链路诊断"
+echo -e "3. 彻底卸载"
+echo -e "4. 退出程序"
 echo -e "--------------------------------------------"
 read -p "请输入序号: " opt
 
