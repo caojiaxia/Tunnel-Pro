@@ -1,6 +1,6 @@
 # Tunnel-Pro 🚀
 
-**极简、轻量、原生的 Linux 网络隧道一键部署工具。**
+**极简、轻量、原生的 Linux 网络隧道一键部署工具。请自行搭配CF优选域名/IP使用**
 
 Tunnel-Pro 旨在通过 Cloudflare Tunnel 与 Nginx 反代技术，为 VPS 提供高性能、高隐蔽性的 VLESS 接入。无需 Docker，直接运行于原生 Linux 环境。
 
