@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Tunnel-Pro NAT/KVM 极致整合管理版
+# Tunnel-Pro NAT/KVM
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
 # --- 1. 界面与辅助函数 ---
