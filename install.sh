@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# Tunnel-Pro 核心整合版 (不再遗漏任何参数与链接)
+# Tunnel-Pro 极致对齐版
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-# 1. 进度反馈函数
 show_progress() {
     local pid=$1; local msg=$2
     echo -ne "${BLUE}>>> ${msg}... ${NC}"
@@ -11,48 +10,50 @@ show_progress() {
     echo -e " ${GREEN}完成!${NC}"
 }
 
-# 2. 环境清理与预检
 check_env() {
     [[ $EUID -ne 0 ]] && echo -e "${RED}请使用 root 权限运行!${NC}" && exit 1
-    echo -e "${BLUE}>>> 正在同步环境依赖并清理旧配置...${NC}"
-    [ -f /usr/bin/apt ] && apt update -y && apt install -y nginx curl wget jq net-tools || yum install -y nginx curl wget jq net-tools
-    # 核心修复：移除 Nginx 默认站点防止冲突
+    apt update -y && apt install -y nginx curl wget jq net-tools >/dev/null 2>&1
     rm -f /etc/nginx/sites-enabled/default
-    rm -f /etc/nginx/conf.d/default.conf
 }
 
-# 3. 部署逻辑
 deploy() {
     check_env
     local CORE=$1
-    echo -e "${YELLOW}--- 请输入配置参数 ---${NC}"
-    read -p "请输入 Cloudflare Tunnel Token: " TOKEN
-    read -p "请输入 SNI 域名 (如: cloud.yourdomain.com): " DOMAIN
-    read -p "请输入伪装 Host (如: www.bing.com): " HOST
+    echo -e "${YELLOW}--- 配置参数填写 ---${NC}"
+    read -p "1. 输入 CF Tunnel Token: " TOKEN
+    read -p "2. 输入你在 CF 绑定的域名 (SNI): " DOMAIN
+    read -p "3. 输入伪装 Host (如 www.bing.com): " HOST
     
+    # 核心端口处理
     if [ "$CORE" == "singbox" ]; then
-        read -p "请输入 Sing-box 监听端口 (需与 CF 后台一致): " BACKEND_PORT
+        read -p "4. 输入 Sing-box 监听端口 (建议 10086): " BACKEND_PORT
     else
-        echo -e "${BLUE}>>> Xray 将监听固定端口: 8080${NC}"
         BACKEND_PORT=8080
+        echo -e "${BLUE}>>> Xray 默认监听 8080${NC}"
     fi
-    read -p "请输入 Nginx 监听的 NAT 映射端口: " NAT_PORT
+
+    # Nginx 端口处理 (这是 CF 网页后台要填的 URL 端口)
+    read -p "5. 输入 Nginx 转发端口 (即 CF 后台填写的端口): " NAT_PORT
     
     UUID=$(cat /proc/sys/kernel/random/uuid)
     PATH_WS="/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"
 
-    # --- 步骤 1: 安装与配置核心 ---
+    # --- 1. 安装核心 ---
     if [ "$CORE" == "xray" ]; then
         bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install >/dev/null 2>&1 &
-        show_progress $! "正在安装 Xray"
+        show_progress $! "部署 Xray"
         mkdir -p /usr/local/etc/xray
         cat <<EOF > /usr/local/etc/xray/config.json
-{"inbounds":[{"port":8080,"protocol":"vless","settings":{"clients":[{"id":"$UUID"}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"$PATH_WS"}}}],"outbounds":[{"protocol":"freedom"}]}
+{"inbounds":[{"port":$BACKEND_PORT,"protocol":"vless","settings":{"clients":[{"id":"$UUID"}],"decryption":"none"},"streamSettings":{"network":"ws","wsSettings":{"path":"$PATH_WS"}}}],"outbounds":[{"protocol":"freedom"}]}
 EOF
-        systemctl restart xray >/dev/null 2>&1
+        systemctl restart xray
     else
         bash -c "$(curl -L https://sing-box.app/install.sh)" >/dev/null 2>&1 &
-        show_progress $! "正在安装 Sing-box"
+        show_progress $! "部署 Sing-box"
+        cat <<EOF > /etc/sing-box/config.json
+{"inbounds":[{"type":"vless","listen":"127.0.0.1","listen_port":$BACKEND_PORT,"users":[{"uuid":"$UUID"}],"transport":{"type":"ws","path":"$PATH_WS"}}],"outbounds":[{"type":"direct"}]}
+EOF
+        # 写入修复过 DNS 的 service
         cat <<EOF > /etc/systemd/system/sing-box.service
 [Unit]
 Description=sing-box service
@@ -64,14 +65,11 @@ Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
-        cat <<EOF > /etc/sing-box/config.json
-{"inbounds":[{"type":"vless","listen":"127.0.0.1","listen_port":$BACKEND_PORT,"users":[{"uuid":"$UUID"}],"transport":{"type":"ws","path":"$PATH_WS"}}],"outbounds":[{"type":"direct"}]}
-EOF
-        systemctl daemon-reload && systemctl restart sing-box >/dev/null 2>&1
+        systemctl daemon-reload && systemctl restart sing-box
     fi
 
-    # --- 步骤 2: 配置 Nginx 反代 ---
-    echo -ne "${BLUE}>>> 正在配置 Nginx 转发到端口 $BACKEND_PORT...${NC}"
+    # --- 2. Nginx 强制对齐 ---
+    fuser -k $NAT_PORT/tcp >/dev/null 2>&1 # 杀掉占用该端口的残留进程
     cat <<EOF > /etc/nginx/conf.d/tunnel.conf
 server {
     listen $NAT_PORT;
@@ -86,57 +84,47 @@ server {
     }
 }
 EOF
-    systemctl restart nginx >/dev/null 2>&1 && echo -e " ${GREEN}完成!${NC}" || { echo -e " ${RED}Nginx 启动失败，请检查端口 $NAT_PORT 是否被占用${NC}"; exit 1; }
+    systemctl restart nginx || { echo -e "${RED}Nginx 启动失败，请检查端口 $NAT_PORT${NC}"; exit 1; }
 
-    # --- 步骤 3: 启动 Cloudflare Tunnel ---
+    # --- 3. 隧道启动 ---
     cat <<EOF > /etc/systemd/system/cloudflared.service
 [Unit]
 Description=Cloudflare Tunnel
 After=network.target
 [Service]
-ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token $TOKEN --url http://127.0.0.1:$NAT_PORT
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token $TOKEN
 Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload && systemctl enable --now cloudflared >/dev/null 2>&1
-    
-    # --- 最终节点输出 (承上启下的关键) ---
+    systemctl daemon-reload && systemctl enable --now cloudflared
+
+    # --- 4. 关键输出 (对齐指引) ---
     echo -e "\n${YELLOW}==============================================${NC}"
-    echo -e "${GREEN}部署成功! 运行信息如下：${NC}"
-    echo -e "核心类型: $CORE"
-    echo -e "后端监听: $BACKEND_PORT"
-    echo -e "NAT 监听: $NAT_PORT"
-    echo -e "UUID: $UUID"
-    echo -e "路径: $PATH_WS"
-    echo -e "\n${YELLOW}请将下方链接导入客户端：${NC}"
-    echo -e "${BLUE}vless://$UUID@$DOMAIN:443?path=$(echo $PATH_WS | sed 's/\//%2F/g')&security=tls&type=ws&sni=$DOMAIN&host=$HOST&fp=chrome#Tunnel-Pro-NAT${NC}"
+    echo -e "${GREEN}部署完成！请务必检查以下设置：${NC}"
+    echo -e "${WHITE}1. 请前往 Cloudflare Zero Trust 网页后台${NC}"
+    echo -e "${WHITE}2. 在 Public Hostname 中设置 URL 为: ${CYAN}http://127.0.0.1:$NAT_PORT${NC}"
+    echo -e "----------------------------------------------"
+    echo -e "${GREEN}客户端导入链接：${NC}"
+    echo -e "${BLUE}vless://$UUID@$DOMAIN:443?path=$(echo $PATH_WS | sed 's/\//%2F/g')&security=tls&type=ws&sni=$DOMAIN&host=$HOST&fp=chrome#Tunnel-Pro-KVM${NC}"
     echo -e "${YELLOW}==============================================${NC}"
 }
 
-# 4. 辅助功能
 diagnose() {
-    echo -e "${BLUE}>>> 正在进行链路诊断...${NC}"
-    pgrep -x xray >/dev/null || pgrep -x sing-box >/dev/null && echo -e "核心状态: ${GREEN}正常${NC}" || echo -e "核心状态: ${RED}异常${NC}"
-    systemctl is-active --quiet nginx && echo -e "Nginx 状态: ${GREEN}正常${NC}" || echo -e "Nginx 状态: ${RED}异常${NC}"
-    systemctl is-active --quiet cloudflared && echo -e "隧道状态: ${GREEN}正常${NC}" || echo -e "隧道状态: ${RED}异常${NC}"
+    echo -e "${BLUE}>>> 链路诊断:${NC}"
+    pgrep -x xray >/dev/null || pgrep -x sing-box >/dev/null && echo -e "核心: ${GREEN}运行中${NC}" || echo -e "核心: ${RED}未运行${NC}"
+    netstat -tlpn | grep -q ":$(netstat -tlpn | grep nginx | awk '{print $4}' | cut -d: -f2)" && echo -e "Nginx: ${GREEN}运行中${NC}" || echo -e "Nginx: ${RED}异常${NC}"
+    systemctl is-active --quiet cloudflared && echo -e "隧道: ${GREEN}已连接${NC}" || echo -e "隧道: ${RED}未连接${NC}"
 }
 
-uninstall() {
-    systemctl stop cloudflared nginx xray sing-box 2>/dev/null
-    rm -f /etc/nginx/conf.d/tunnel.conf /etc/systemd/system/cloudflared.service /usr/local/bin/cloudflared
-    echo -e "${RED}已彻底卸载。${NC}"
-}
-
-# --- 菜单区 ---
-echo -e "${BLUE}=== Tunnel-Pro NAT 极致管理终端 ===${NC}"
-echo "1. 部署 Xray (8080) | 2. 部署 Sing-box (手动端口) | 3. 查看日志 | 4. 卸载 | 5. 退出 | 6. 链路诊断"
+# 菜单入口
+echo -e "${BLUE}=== Tunnel-Pro NAT/KVM 管理器 ===${NC}"
+echo "1. 部署 Xray | 2. 部署 Sing-box | 3. 诊断 | 4. 卸载 | 5. 退出"
 read -p "选择: " opt
 case $opt in
     1) deploy "xray" ;;
     2) deploy "singbox" ;;
-    3) journalctl -u cloudflared -f ;;
-    4) uninstall ;;
-    6) diagnose ;;
+    3) diagnose ;;
+    4) systemctl stop cloudflared nginx xray sing-box && rm -rf /etc/nginx/conf.d/tunnel.conf && echo "已卸载" ;;
     *) exit 0 ;;
 esac
