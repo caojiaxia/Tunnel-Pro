@@ -1,414 +1,347 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Tunnel-Pro v7 Ultimate
+############################################################
+#  Xray + Cloudflare Tunnel Ultimate Script
+#  功能：
+#  - 自动安装 Xray
+#  - VLESS + XHTTP + TLS
+#  - Cloudflare Tunnel
+#  - 临时隧道
+#  - Cloudflare 优选 IP
+#  - WARP IPv4 出口
+#  - 节点二维码
+#  - 随机路径
+#  - BBR优化
+#  - 端口检测
+#  - 菜单循环
+############################################################
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+GREEN="\033[32m"
+RED="\033[31m"
+YELLOW="\033[33m"
+PLAIN="\033[0m"
 
-CONFIG_DIR="/etc/sing-box"
-INFO_FILE="/etc/tunnel-pro.info"
-SUB_DIR="/var/www/html"
+XRAY_PORT=10000
+CONFIG_PATH="/usr/local/etc/xray/config.json"
+UUID=$(cat /proc/sys/kernel/random/uuid)
 
-WS_PORT=3001
-XHTTP_PORT=3002
-NGINX_PORT=8080
+RANDOM_PATH=$(cat /dev/urandom | tr -dc a-z0-9 | head -c 8)
 
-detect_os(){
+DOMAIN=""
+TUNNEL_NAME="xray-tunnel"
 
-if [ -f /etc/debian_version ]; then
-PM="apt"
-elif [ -f /etc/redhat-release ]; then
-PM="yum"
+############################################################
+# 系统检测
+############################################################
+
+detect_os() {
+
+if [[ -f /etc/debian_version ]]; then
+    OS="debian"
+elif [[ -f /etc/redhat-release ]]; then
+    OS="centos"
 else
-echo "Unsupported OS"
+    echo -e "${RED}不支持的系统${PLAIN}"
+    exit
+fi
+
+}
+
+############################################################
+# 安装依赖
+############################################################
+
+install_base() {
+
+echo -e "${GREEN}安装基础依赖...${PLAIN}"
+
+if [[ $OS == "debian" ]]; then
+apt update
+apt install -y curl wget unzip qrencode lsof
+else
+yum install -y curl wget unzip qrencode lsof
+fi
+
+}
+
+############################################################
+# 端口检测
+############################################################
+
+check_port() {
+
+if lsof -i:$XRAY_PORT >/dev/null 2>&1; then
+echo -e "${RED}端口 $XRAY_PORT 已被占用${PLAIN}"
 exit
 fi
 
 }
 
-install_base(){
+############################################################
+# 安装 Xray
+############################################################
 
-if [ "$PM" = "apt" ]; then
-apt update -y
-apt install -y curl wget nginx jq qrencode openssl net-tools
+install_xray() {
+
+echo -e "${GREEN}安装 Xray...${PLAIN}"
+
+wget -O xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+
+unzip -o xray.zip
+
+install -m 755 xray /usr/local/bin/xray
+
+mkdir -p /usr/local/etc/xray
+
+}
+
+############################################################
+# 生成配置
+############################################################
+
+generate_config() {
+
+echo -e "${GREEN}生成 Xray 配置${PLAIN}"
+
+cat > $CONFIG_PATH <<EOF
+{
+ "inbounds":[
+  {
+   "port":$XRAY_PORT,
+   "protocol":"vless",
+   "settings":{
+    "clients":[
+     {
+      "id":"$UUID"
+     }
+    ],
+    "decryption":"none"
+   },
+   "streamSettings":{
+    "network":"xhttp",
+    "security":"none",
+    "xhttpSettings":{
+     "path":"/$RANDOM_PATH"
+    }
+   }
+  }
+ ],
+ "outbounds":[
+  {
+   "protocol":"freedom"
+  }
+ ]
+}
+EOF
+
+}
+
+############################################################
+# 启动 Xray
+############################################################
+
+start_xray() {
+
+pkill xray
+
+nohup xray -config $CONFIG_PATH >/dev/null 2>&1 &
+
+echo -e "${GREEN}Xray 已启动${PLAIN}"
+
+}
+
+############################################################
+# 安装 Cloudflare Tunnel
+############################################################
+
+install_tunnel() {
+
+echo -e "${GREEN}安装 Cloudflare Tunnel${PLAIN}"
+
+wget -O cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+
+chmod +x cloudflared
+
+mv cloudflared /usr/local/bin/
+
+}
+
+############################################################
+# 启动临时隧道
+############################################################
+
+start_temp_tunnel() {
+
+echo -e "${GREEN}启动临时 Tunnel${PLAIN}"
+
+cloudflared tunnel --url http://localhost:$XRAY_PORT > tunnel.log 2>&1 &
+
+sleep 5
+
+DOMAIN=$(grep trycloudflare tunnel.log | head -n1 | awk '{print $NF}')
+
+echo -e "${GREEN}Tunnel地址: $DOMAIN${PLAIN}"
+
+}
+
+############################################################
+# Tunnel 状态检测
+############################################################
+
+check_tunnel() {
+
+if pgrep cloudflared >/dev/null; then
+echo -e "${GREEN}Tunnel运行中${PLAIN}"
 else
-yum install -y epel-release
-yum install -y curl wget nginx jq qrencode openssl net-tools
+echo -e "${RED}Tunnel未运行${PLAIN}"
 fi
 
 }
 
-enable_bbr(){
+############################################################
+# WARP IPv4
+############################################################
+
+install_warp() {
+
+echo -e "${GREEN}安装WARP${PLAIN}"
+
+bash <(curl -fsSL https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh)
+
+}
+
+############################################################
+# BBR优化
+############################################################
+
+enable_bbr() {
+
+echo -e "${GREEN}开启BBR${PLAIN}"
 
 echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
 echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
 
 sysctl -p
 
-echo -e "${GREEN}BBR Enabled${NC}"
-
 }
 
-install_singbox(){
+############################################################
+# 节点URL
+############################################################
 
-bash -c "$(curl -fsSL https://sing-box.app/install.sh)"
+show_node() {
 
-mkdir -p $CONFIG_DIR
+NODE="vless://$UUID@$DOMAIN:443?encryption=none&security=tls&type=xhttp&path=%2F$RANDOM_PATH#$DOMAIN"
 
-}
+echo -e "${GREEN}节点:${PLAIN}"
 
-install_cloudflared(){
-
-wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
-
-chmod +x /usr/local/bin/cloudflared
-
-}
-
-install_warp(){
-
-bash <(curl -fsSL https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh) install
-
-}
-
-random_path(){
-
-WS_PATH="/$(openssl rand -hex 4)"
-XHTTP_PATH="/$(openssl rand -hex 4)"
-
-}
-
-generate_uuid(){
-
-UUID=$(cat /proc/sys/kernel/random/uuid)
-
-}
-
-save_info(){
-
-cat > $INFO_FILE <<EOF
-UUID=$UUID
-DOMAIN=$DOMAIN
-WS_PATH=$WS_PATH
-XHTTP_PATH=$XHTTP_PATH
-EOF
-
-}
-
-load_info(){
-
-[ -f $INFO_FILE ] && source $INFO_FILE
-
-}
-
-config_nginx(){
-
-rm -rf /etc/nginx/conf.d/*
-
-cat > /etc/nginx/conf.d/tunnel.conf <<EOF
-server {
-
-listen $NGINX_PORT;
-
-location $WS_PATH {
-
-proxy_pass http://127.0.0.1:$WS_PORT;
-
-proxy_http_version 1.1;
-
-proxy_set_header Upgrade \$http_upgrade;
-proxy_set_header Connection "upgrade";
-proxy_set_header Host \$host;
-
-}
-
-location $XHTTP_PATH {
-
-proxy_pass http://127.0.0.1:$XHTTP_PORT;
-
-proxy_http_version 1.1;
-
-proxy_set_header Host \$host;
-
-}
-
-location / {
-
-root /var/www/html;
-
-}
-
-}
-EOF
-
-systemctl restart nginx
-systemctl enable nginx
-
-}
-
-install_ws(){
-
-load_info
-
-if [ -z "$UUID" ]; then
-generate_uuid
-random_path
-read -p "输入域名: " DOMAIN
-save_info
-fi
-
-cat > $CONFIG_DIR/ws.json <<EOF
-{
-"log":{"level":"info"},
-"inbounds":[
-{
-"type":"vless",
-"listen":"127.0.0.1",
-"listen_port":$WS_PORT,
-"users":[{"uuid":"$UUID"}],
-"transport":{"type":"ws","path":"$WS_PATH"}
-}
-],
-"outbounds":[{"type":"direct"}]
-}
-EOF
-
-cat > /etc/systemd/system/singbox-ws.service <<EOF
-[Unit]
-Description=Singbox WS
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/sing-box run -c $CONFIG_DIR/ws.json
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable singbox-ws
-systemctl restart singbox-ws
-
-config_nginx
-
-}
-
-install_xhttp(){
-
-load_info
-
-cat > $CONFIG_DIR/xhttp.json <<EOF
-{
-"log":{"level":"info"},
-"inbounds":[
-{
-"type":"vless",
-"listen":"127.0.0.1",
-"listen_port":$XHTTP_PORT,
-"users":[{"uuid":"$UUID"}],
-"transport":{"type":"xhttp","path":"$XHTTP_PATH","mode":"auto"}
-}
-],
-"outbounds":[{"type":"direct"}]
-}
-EOF
-
-cat > /etc/systemd/system/singbox-xhttp.service <<EOF
-[Unit]
-Description=Singbox XHTTP
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/sing-box run -c $CONFIG_DIR/xhttp.json
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable singbox-xhttp
-systemctl restart singbox-xhttp
-
-config_nginx
-
-}
-
-start_token_tunnel(){
-
-read -p "Tunnel Token: " TOKEN
-
-cat > /etc/systemd/system/cloudflared-token.service <<EOF
-[Unit]
-Description=Cloudflare Tunnel
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token $TOKEN
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable cloudflared-token
-systemctl restart cloudflared-token
-
-}
-
-start_quick_tunnel(){
-
-cat > /etc/systemd/system/cloudflared-quick.service <<EOF
-[Unit]
-Description=Quick Tunnel
-After=network.target
-
-[Service]
-ExecStart=/usr/local/bin/cloudflared tunnel --url http://127.0.0.1:$NGINX_PORT
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable cloudflared-quick
-systemctl restart cloudflared-quick
-
-echo "查看地址:"
-echo "journalctl -u cloudflared-quick -f"
-
-}
-
-generate_subscription(){
-
-load_info
-
-mkdir -p $SUB_DIR
-
-WS_ENCODE=$(echo $WS_PATH | sed 's/\//%2F/g')
-XHTTP_ENCODE=$(echo $XHTTP_PATH | sed 's/\//%2F/g')
-
-WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&type=ws&security=tls&host=$DOMAIN&path=$WS_ENCODE&sni=$DOMAIN#WS"
-XHTTP_LINK="vless://$UUID@$DOMAIN:443?encryption=none&type=xhttp&security=tls&path=$XHTTP_ENCODE&sni=$DOMAIN#XHTTP"
-
-echo "$WS_LINK" > $SUB_DIR/sub.txt
-echo "$XHTTP_LINK" >> $SUB_DIR/sub.txt
-
-echo "订阅地址:"
-echo "http://$DOMAIN/sub.txt"
-
-}
-
-cf_best_ip(){
-
-IPS=("1.1.1.1" "104.16.1.1" "104.17.1.1")
-
-for ip in "${IPS[@]}"; do
-ping -c 3 $ip | grep avg
-done
-
-}
-
-show_nodes(){
-
-load_info
-
-WS_ENCODE=$(echo $WS_PATH | sed 's/\//%2F/g')
-XHTTP_ENCODE=$(echo $XHTTP_PATH | sed 's/\//%2F/g')
-
-WS_LINK="vless://$UUID@$DOMAIN:443?encryption=none&type=ws&security=tls&host=$DOMAIN&path=$WS_ENCODE&sni=$DOMAIN#WS"
-XHTTP_LINK="vless://$UUID@$DOMAIN:443?encryption=none&type=xhttp&security=tls&path=$XHTTP_ENCODE&sni=$DOMAIN#XHTTP"
+echo $NODE
 
 echo
-echo "WS节点:"
-echo $WS_LINK
-qrencode -t ANSIUTF8 "$WS_LINK"
 
-echo
-echo "XHTTP节点:"
-echo $XHTTP_LINK
-qrencode -t ANSIUTF8 "$XHTTP_LINK"
+qrencode -t ANSIUTF8 "$NODE"
 
 }
 
-diagnose(){
+############################################################
+# Cloudflare 优选IP
+############################################################
 
-systemctl status singbox-ws --no-pager | grep Active
-systemctl status singbox-xhttp --no-pager | grep Active
-systemctl status nginx --no-pager | grep Active
-systemctl status cloudflared-token --no-pager | grep Active
-systemctl status cloudflared-quick --no-pager | grep Active
+cf_best_ip() {
 
-ss -tulpn | grep -E '3001|3002|8080'
+echo -e "${GREEN}扫描 Cloudflare 优选IP${PLAIN}"
 
-}
-
-uninstall_all(){
-
-systemctl stop singbox-ws singbox-xhttp nginx cloudflared-token cloudflared-quick
-
-rm -rf /etc/systemd/system/singbox*
-rm -rf /etc/systemd/system/cloudflared*
-rm -rf /etc/nginx/conf.d/tunnel.conf
-rm -rf $CONFIG_DIR
-rm -rf $INFO_FILE
-
-systemctl daemon-reload
-
-echo "卸载完成"
+bash <(curl -s https://raw.githubusercontent.com/XIU2/CloudflareSpeedTest/master/install.sh)
 
 }
 
-menu(){
+############################################################
+# 菜单
+############################################################
+
+menu() {
 
 clear
 
-echo "=============================="
-echo "      Tunnel-Pro"
-echo "=============================="
+echo -e "${GREEN}"
+echo "================================="
+echo " Xray Tunnel Ultimate Script"
+echo "================================="
+echo "1. 安装Xray"
+echo "2. 生成配置"
+echo "3. 启动Xray"
+echo "4. 安装Cloudflare Tunnel"
+echo "5. 启动临时Tunnel"
+echo "6. 查看Tunnel状态"
+echo "7. 显示节点"
+echo "8. 安装WARP IPv4"
+echo "9. Cloudflare优选IP"
+echo "10. 开启BBR"
+echo "0. 退出"
+echo "================================="
+echo -e "${PLAIN}"
 
-echo "1 安装 WS 节点"
-echo "2 安装 XHTTP 节点"
-echo "3 启动 Token Tunnel"
-echo "4 启动 Quick Tunnel"
-echo "5 安装 WARP"
-echo "6 启用 BBR"
-echo "7 查看节点"
-echo "8 Cloudflare 优选IP"
-echo "9 生成订阅"
-echo "10 链路检测"
-echo "11 卸载"
-echo "0 退出"
+read -p "请选择: " num
 
-read -p "选择: " num
+case "$num" in
 
-case $num in
+1)
+detect_os
+install_base
+install_xray
+;;
 
-1) install_ws ;;
-2) install_xhttp ;;
-3) start_token_tunnel ;;
-4) start_quick_tunnel ;;
-5) install_warp ;;
-6) enable_bbr ;;
-7) show_nodes ;;
-8) cf_best_ip ;;
-9) generate_subscription ;;
-10) diagnose ;;
-11) uninstall_all ;;
-0) exit ;;
+2)
+check_port
+generate_config
+;;
+
+3)
+start_xray
+;;
+
+4)
+install_tunnel
+;;
+
+5)
+start_temp_tunnel
+;;
+
+6)
+check_tunnel
+;;
+
+7)
+show_node
+;;
+
+8)
+install_warp
+;;
+
+9)
+cf_best_ip
+;;
+
+10)
+enable_bbr
+;;
+
+0)
+exit
+;;
 
 esac
 
 }
 
-detect_os
-install_base
-install_singbox
-install_cloudflared
+############################################################
+# 循环菜单
+############################################################
+
+while true
+do
 menu
+read -p "按回车继续..."
+done
