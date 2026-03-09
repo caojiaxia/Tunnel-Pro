@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Tunnel-Pro 纵向菜单增强版
+# Tunnel-Pro 
 # 包含：全系统兼容 + BBR + Nginx 优化 + 临时隧道修复
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; WHITE='\033[1;37m'; NC='\033[0m'
 
@@ -168,4 +168,43 @@ diagnose() {
     clear
     echo -e "${BLUE}=== 链路诊断系统 ===${NC}"
     systemctl is-active nginx >/dev/null 2>&1 && echo -e "Nginx:    ${GREEN}● 运行中${NC}" || echo -e "Nginx:    ${RED}○ 异常${NC}"
-    systemctl is-active sing-box >/dev/null 2>&1 && echo -e "Sing-box: ${GREEN}● 运行中${NC}" ||
+    systemctl is-active sing-box >/dev/null 2>&1 && echo -e "Sing-box: ${GREEN}● 运行中${NC}" || echo -e "Sing-box: ${RED}○ 异常${NC}"
+    echo -e "TCP 端口占用状况："
+    netstat -tulpn | grep -E 'nginx|sing-box|cloudflared'
+    read -p "按回车键返回主菜单..."
+}
+
+uninstall() {
+    echo -e "${RED}正在清理所有服务和配置...${NC}"
+    systemctl stop cloudflared nginx sing-box >/dev/null 2>&1
+    systemctl disable cloudflared nginx sing-box >/dev/null 2>&1
+    pkill -9 cloudflared nginx sing-box >/dev/null 2>&1
+    rm -rf /etc/systemd/system/cloudflared.service /etc/systemd/system/sing-box.service /etc/nginx/conf.d/tunnel.conf /etc/sing-box/
+    echo -e "${GREEN}卸载完成。${NC}"
+    sleep 2
+}
+
+# --- 4. 纵向 UI 菜单主循环 ---
+while true; do
+    clear
+    echo -e "${CYAN}┌─────────────────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│${NC}          ${WHITE}Tunnel-Pro 控制面板 (全系统兼容) ${NC}          ${CYAN}│${NC}"
+    echo -e "${CYAN}├─────────────────────────────────────────────────────┤${NC}"
+    echo -e "${CYAN}│${NC}  ${GREEN}1.${NC} 部署 Token 模式 (自有域名/永久)${NC}               ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${GREEN}2.${NC} 部署 临时隧道模式 (无需域名/即开即用)${NC}           ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${YELLOW}3.${NC} 链路诊断 (排查连接问题)${NC}                       ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${RED}4.${NC} 彻底卸载 (清空环境)${NC}                           ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${WHITE}5.${NC} 退出脚本${NC}                                     ${CYAN}│${NC}"
+    echo -e "${CYAN}└─────────────────────────────────────────────────────┘${NC}"
+    echo -n -e "${CYAN}请选择序号 [1-5]: ${NC}"
+    read opt
+
+    case $opt in
+        1) deploy_token ;;
+        2) deploy_quick ;;
+        3) diagnose ;;
+        4) uninstall ;;
+        5) clear; exit 0 ;;
+        *) echo -e "${RED}无效输入，请重新选择！${NC}"; sleep 1 ;;
+    esac
+done
