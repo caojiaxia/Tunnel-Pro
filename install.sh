@@ -265,7 +265,7 @@ clear
 
 echo -e "${GREEN}"
 echo "================================="
-echo " BoGe Xray Tunnel Ultimate Script"
+echo "BoGe Xray Tunnel Ultimate Script"
 echo "================================="
 echo "1. 安装Xray"
 echo "2. 生成配置"
