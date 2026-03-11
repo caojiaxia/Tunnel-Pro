@@ -29,7 +29,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/caojiaxia/Tunnel-Pro/main/inst
 
 - 1.登录 [Cloudflare Dashboard](https://dash.cloudflare.com/login)。
 
-- 2. 进入 Zero Trust -> Networks -> Tunnels。
+- 2.进入 Zero Trust -> Networks -> Tunnels。
 
 - 3. 点击 Create a tunnel，选择 cloudflared。
 
