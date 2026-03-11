@@ -100,7 +100,7 @@ EOF
     systemctl restart nginx
 }
 
-# --- 3. 新增功能：查看节点信息 ---
+# --- 3. 增强功能：智能查看节点信息 ---
 view_config() {
     if [ ! -f /etc/sing-box/config.json ]; then
         echo -e "${RED}错误：未发现配置文件，请先部署节点。${NC}"
@@ -108,38 +108,45 @@ view_config() {
         return
     fi
 
-    # 提取信息
+    # 1. 提取基础信息
     local CONF_UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/sing-box/config.json)
     local CONF_PATH=$(jq -r '.inbounds[0].transport.path' /etc/sing-box/config.json)
     
-    # 从 cloudflared 服务或日志中尝试获取域名
+    # 2. 智能域名检索
     local CONF_DOMAIN=""
-    if [ -f /etc/systemd/system/cloudflared.service ]; then
-        # 尝试从 Token 模式备份或当前运行状态推断 (Token模式通常需要手动记录或从CF后台看，这里尝试从之前的 done 信息读取)
-        # 脚本本身不存储域名，我们尝试从 nginx 配置中提取 HOST
-        CONF_DOMAIN=$(grep -oP '(?<=https://)[-0-9a-z.]*\.trycloudflare\.com' /tmp/cf_quick.log 2>/dev/null | head -n 1)
-        [ -z "$CONF_DOMAIN" ] && echo -e "${YELLOW}提示：Token模式域名请参照您的 Cloudflare 后台设置。${NC}"
+    # 优先从本地备份获取 (针对 Token 模式)
+    if [ -f /etc/sing-box/.domain ]; then
+        CONF_DOMAIN=$(cat /etc/sing-box/.domain)
+    # 其次从临时日志获取 (针对 Quick 模式)
+    elif [ -f /tmp/cf_quick.log ]; then
+        CONF_DOMAIN=$(grep -oP '(?<=https://)[-0-9a-z.]*\.trycloudflare\.com' /tmp/cf_quick.log | head -n 1)
     fi
 
+    local DISPLAY_DOMAIN=${CONF_DOMAIN:-"YOUR_DOMAIN"}
+
     echo -e "\n${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}当前节点配置信息：${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}当前节点配置信息：${NC}"
     echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
-    echo -e "${YELLOW}│${NC}  UUID: ${CYAN}$CONF_UUID${NC}"
-    echo -e "${YELLOW}│${NC}  路径: ${CYAN}$CONF_PATH${NC}"
-    [ -n "$CONF_DOMAIN" ] && echo -e "${YELLOW}│${NC}  临时域名: ${CYAN}$CONF_DOMAIN${NC}"
+    echo -e "${YELLOW}│${NC}  域名: ${CYAN}$DISPLAY_DOMAIN${NC}"
+    echo -e "${YELLOW}│${NC}  路径: ${CYAN}$CONF_PATH${NC}"
+    echo -e "${YELLOW}│${NC}  UUID: ${CYAN}$CONF_UUID${NC}"
     echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
-    echo -e "${YELLOW}│${NC}  ${BLUE}通用 VLESS 链接格式 (需自行填入域名)：${NC}"
-    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$CONF_UUID@YOUR_DOMAIN:443?path=$(echo $CONF_PATH | sed 's/\//%2F/g')&security=tls&encryption=none&type=ws&sni=YOUR_DOMAIN&host=YOUR_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
+    echo -e "${YELLOW}│${NC}  ${BLUE}一键导入链接：${NC}"
+    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$CONF_UUID@$DISPLAY_DOMAIN:443?path=$(echo $CONF_PATH | sed 's/\//%2F/g')&security=tls&encryption=none&type=ws&sni=$DISPLAY_DOMAIN&host=$DISPLAY_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
+    [ -z "$CONF_DOMAIN" ] && echo -e "${YELLOW}│${NC}  ${RED}注意：由于是全新运行，请手动替换链接中的 YOUR_DOMAIN${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
     read -p "按回车键返回主菜单..."
 }
 
-# --- 4. 菜单功能函数 (保留) ---
+# --- 4. 菜单功能函数 ---
 deploy_token() {
     detect_os && prepare_env
     echo -e "${CYAN}请输入您的 Cloudflare Tunnel 信息：${NC}"
     read -p "Token: " TOKEN
     read -p "域名 (example.com): " DOMAIN
+    # 备份域名到本地，方便后续查看
+    echo "$DOMAIN" > /etc/sing-box/.domain
+    
     read -p "后端端口 (默认3001): " BACKEND_PORT; BACKEND_PORT=${BACKEND_PORT:-3001}
     read -p "转发端口 (默认8080): " NAT_PORT; NAT_PORT=${NAT_PORT:-8080}
     config_services
@@ -159,6 +166,9 @@ EOF
 
 deploy_quick() {
     detect_os && prepare_env
+    # 清理旧的备份
+    rm -f /etc/sing-box/.domain
+    
     read -p "后端端口 (默认3001): " BACKEND_PORT; BACKEND_PORT=${BACKEND_PORT:-3001}
     read -p "转发端口 (默认8080): " NAT_PORT; NAT_PORT=${NAT_PORT:-8080}
     config_services
@@ -184,14 +194,14 @@ deploy_quick() {
 print_done() {
     local FINAL_DOMAIN=${DOMAIN:-$QUICK_DOMAIN}
     echo -e "\n${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}部署成功！配置详情如下：${NC}"
+    echo -e "${YELLOW}│${NC}  ${GREEN}部署成功！配置详情如下：${NC}"
     echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
-    echo -e "${YELLOW}│${NC}  地址: ${CYAN}https://$FINAL_DOMAIN${NC}"
-    echo -e "${YELLOW}│${NC}  路径: ${CYAN}$PATH_WS${NC}"
-    echo -e "${YELLOW}│${NC}  UUID: ${CYAN}$UUID${NC}"
+    echo -e "${YELLOW}│${NC}  地址: ${CYAN}https://$FINAL_DOMAIN${NC}"
+    echo -e "${YELLOW}│${NC}  路径: ${CYAN}$PATH_WS${NC}"
+    echo -e "${YELLOW}│${NC}  UUID: ${CYAN}$UUID${NC}"
     echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
-    echo -e "${YELLOW}│${NC}  ${BLUE}VLESS 节点链接：${NC}"
-    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$UUID@$FINAL_DOMAIN:443?path=$(echo $PATH_WS | sed 's/\//%2F/g')&security=tls&encryption=none&type=ws&sni=$FINAL_DOMAIN&host=$FINAL_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
+    echo -e "${YELLOW}│${NC}  ${BLUE}VLESS 节点链接：${NC}"
+    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$UUID@$FINAL_DOMAIN:443?path=$(echo $PATH_WS | sed 's/\//%2F/g')&security=tls&encryption=none&type=ws&sni=$FINAL_DOMAIN&host=$FINAL_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
     read -p "按回车键返回主菜单..."
 }
@@ -216,7 +226,7 @@ uninstall() {
     sleep 2
 }
 
-# --- 5. 主循环菜单 ---
+# --- 5. 主菜单循环 ---
 while true; do
     clear
     echo -e "${CYAN}┌─────────────────────────────────────────────────────┐${NC}"
