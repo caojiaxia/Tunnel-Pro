@@ -27,7 +27,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/caojiaxia/Tunnel-Pro/main/inst
 
 ### 🔑 如何获取 Cloudflare Tunnel Token
 
-- 1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com/login)。
+- 1.登录 [Cloudflare Dashboard](https://dash.cloudflare.com/login)。
 
 - 2. 进入 Zero Trust -> Networks -> Tunnels。
 
