@@ -31,11 +31,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/caojiaxia/Tunnel-Pro/main/inst
 
 - 2.进入 Zero Trust -> Networks -> Tunnels。
 
-- 3. 点击 Create a tunnel，选择 cloudflared。
+- 3.点击 Create a tunnel，选择 cloudflared。
 
-- 4. 获得 Token 字符串，填入脚本提示处。
+- 4.获得 Token 字符串，填入脚本提示处。
 
-- 5. sin-box的隧道端口`（格式 URL=127.0.0.1:随机端口)`必须与nginx一致 （前端是监听端口可随意输入,后端是nginx转发端口必须与隧道一致）
+- 5.sin-box的隧道端口`（格式 URL=127.0.0.1:随机端口)`必须与nginx一致 （前端是监听端口可随意输入,后端是nginx转发端口必须与隧道一致）
 
 **详细步骤：**
 
