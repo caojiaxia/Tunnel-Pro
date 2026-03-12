@@ -230,7 +230,7 @@ uninstall() {
 while true; do
     clear
     echo -e "${CYAN}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${CYAN}│${NC}           ${WHITE}Tunnel-Pro 控制面板 (全系统兼容) ${NC}          ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}           ${WHITE}BoGe-Tunnel-Pro 控制面板 (全系统兼容) ${NC}          ${CYAN}│${NC}"
     echo -e "${CYAN}├─────────────────────────────────────────────────────┤${NC}"
     echo -e "${CYAN}│${NC}  ${GREEN}1.${NC} 部署 Token 模式 (自有域名/永久)${NC}               ${CYAN}│${NC}"
     echo -e "${CYAN}│${NC}  ${GREEN}2.${NC} 部署 临时隧道模式 (无需域名/即开即用)${NC}           ${CYAN}│${NC}"
