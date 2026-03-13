@@ -243,7 +243,7 @@ while true
 do
 clear
 
-echo "======== Tunnel-Pro ========"
+echo "======== BoGe Tunnel-Pro ========"
 echo "1. Token模式部署"
 echo "2. 临时隧道部署"
 echo "3. 查看节点"
