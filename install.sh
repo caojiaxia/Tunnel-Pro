@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Tunnel-Pro
+# Tunnel-Pro 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; WHITE='\033[1;37m'; NC='\033[0m'
 
 UUID=""
@@ -30,10 +30,9 @@ enable_bbr() {
     fi
 }
 
-# --- 2. 部署与配置逻辑 ---
+# --- 2. 环境准备 ---
 prepare_env() {
     echo -e "${BLUE}>>> 安装必要组件...${NC}"
-
     if [[ "$PM" == "apt" ]]; then
         apt update -y && apt install -y nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1
     elif [[ "$PM" == "yum" ]]; then
@@ -49,34 +48,35 @@ prepare_env() {
     chmod +x /usr/local/bin/cloudflared
 }
 
+# --- 修复 sing-box 安装 ---
 install_singbox() {
 
-    if command -v sing-box >/dev/null 2>&1; then
-        return
-    fi
+if command -v sing-box >/dev/null 2>&1; then
+    return
+fi
 
-    echo -e "${BLUE}>>> 安装 sing-box...${NC}"
-
-    wget -O /tmp/sb.tar.gz https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-linux-amd64.tar.gz >/dev/null 2>&1
-    tar -xzf /tmp/sb.tar.gz -C /tmp >/dev/null 2>&1
-
-    SB_BIN=$(find /tmp -name sing-box | head -n 1)
-
-    mv $SB_BIN /usr/local/bin/sing-box
-    chmod +x /usr/local/bin/sing-box
+wget -O /tmp/sb.tar.gz https://github.com/SagerNet/sing-box/releases/latest/download/sing-box-linux-amd64.tar.gz >/dev/null 2>&1
+tar -xzf /tmp/sb.tar.gz -C /tmp >/dev/null 2>&1
+SB_BIN=$(find /tmp -name sing-box | head -n 1)
+mv $SB_BIN /usr/local/bin/sing-box
+chmod +x /usr/local/bin/sing-box
 }
 
+# --- 3. 服务配置 ---
 config_services() {
 
-    fuser -k $NAT_PORT/tcp >/dev/null 2>&1
-    fuser -k $BACKEND_PORT/tcp >/dev/null 2>&1
+fuser -k $NAT_PORT/tcp >/dev/null 2>&1
+fuser -k $BACKEND_PORT/tcp >/dev/null 2>&1
 
-    UUID=$(cat /proc/sys/kernel/random/uuid)
-    PATH_WS="/$(tr -dc A-Za-z0-9 </dev/urandom | head -c 8)"
+UUID=$(cat /proc/sys/kernel/random/uuid)
+PATH_WS="/$(tr -dc A-Za-z0-9 </dev/urandom | head -c 8)"
 
-    install_singbox
+export UUID
+export PATH_WS
 
-    mkdir -p /etc/sing-box/
+install_singbox
+
+mkdir -p /etc/sing-box/
 
 cat <<EOF > /etc/sing-box/config.json
 {
@@ -84,17 +84,10 @@ cat <<EOF > /etc/sing-box/config.json
     "type": "vless",
     "listen": "127.0.0.1",
     "listen_port": $BACKEND_PORT,
-    "users": [{
-      "uuid": "$UUID"
-    }],
-    "transport": {
-      "type": "ws",
-      "path": "$PATH_WS"
-    }
+    "users": [{ "uuid": "$UUID" }],
+    "transport": { "type": "ws", "path": "$PATH_WS" }
   }],
-  "outbounds": [{
-    "type": "direct"
-  }]
+  "outbounds": [{ "type": "direct" }]
 }
 EOF
 
@@ -111,123 +104,136 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload
-    systemctl enable --now sing-box
+systemctl daemon-reload
+systemctl enable --now sing-box
 
-    systemctl stop nginx >/dev/null 2>&1
+systemctl stop nginx >/dev/null 2>&1
+rm -rf /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*
 
-    rm -rf /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*
-
-    MIME_PATH=$(find /etc/nginx -name mime.types | head -n 1)
-    MIME_PATH=${MIME_PATH:-/etc/nginx/mime.types}
+MIME_PATH=$(find /etc/nginx -name mime.types | head -n 1)
+MIME_PATH=${MIME_PATH:-/etc/nginx/mime.types}
 
 cat <<EOF > /etc/nginx/nginx.conf
 user root;
 worker_processes auto;
-
-events {
-    worker_connections 1024;
-}
+events { worker_connections 1024; }
 
 http {
 
-    include $MIME_PATH;
+include $MIME_PATH;
 
-    map \$http_upgrade \$connection_upgrade {
-        default upgrade;
-        '' close;
-    }
+map \$http_upgrade \$connection_upgrade {
+default upgrade;
+'' close;
+}
 
-    server {
+server {
 
-        listen $NAT_PORT;
+listen $NAT_PORT;
 
-        location $PATH_WS {
+location $PATH_WS {
 
-            proxy_redirect off;
-            proxy_pass http://127.0.0.1:$BACKEND_PORT;
+proxy_redirect off;
+proxy_pass http://127.0.0.1:$BACKEND_PORT;
 
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection \$connection_upgrade;
-            proxy_set_header Host \$host;
-        }
+proxy_http_version 1.1;
+proxy_set_header Upgrade \$http_upgrade;
+proxy_set_header Connection \$connection_upgrade;
+proxy_set_header Host \$host;
 
-        location / {
-            return 200 "OK";
-        }
+}
 
-    }
+location / { return 200 "OK"; }
+
+}
 
 }
 EOF
 
-    systemctl enable nginx
-    systemctl restart nginx
+systemctl enable nginx
+systemctl restart nginx
 }
 
-# --- 3. 查看节点 ---
+# --- 查看节点 ---
 view_config() {
 
-    if [ ! -f /etc/sing-box/config.json ]; then
-        echo -e "${RED}错误：未发现配置文件，请先部署节点。${NC}"
-        sleep 2
-        return
-    fi
+if [ ! -f /etc/sing-box/config.json ]; then
+echo -e "${RED}错误：未发现配置文件，请先部署节点。${NC}"
+sleep 2
+return
+fi
 
-    CONF_UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/sing-box/config.json)
-    CONF_PATH=$(jq -r '.inbounds[0].transport.path' /etc/sing-box/config.json)
+CONF_UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/sing-box/config.json)
+CONF_PATH=$(jq -r '.inbounds[0].transport.path' /etc/sing-box/config.json)
 
-    CONF_DOMAIN=""
+CONF_DOMAIN=""
 
-    if [ -f /etc/sing-box/.domain ]; then
-        CONF_DOMAIN=$(cat /etc/sing-box/.domain)
+if [ -f /etc/sing-box/.domain ]; then
+CONF_DOMAIN=$(cat /etc/sing-box/.domain)
 
-    elif [ -f /tmp/cf_quick.log ]; then
-        CONF_DOMAIN=$(grep -oP '(?<=https://)[-0-9a-z.]*\.trycloudflare\.com' /tmp/cf_quick.log | head -n 1)
-    fi
+elif [ -f /tmp/cf_quick.log ]; then
+CONF_DOMAIN=$(grep -oP '(?<=https://)[-0-9a-z.]*\.trycloudflare\.com' /tmp/cf_quick.log | head -n 1)
+fi
 
-    DISPLAY_DOMAIN=${CONF_DOMAIN:-"YOUR_DOMAIN"}
+DISPLAY_DOMAIN=${CONF_DOMAIN:-"YOUR_DOMAIN"}
 
-    echo -e "\n${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}│${NC}  ${GREEN}当前节点配置信息：${NC}"
-    echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
+echo -e "\n${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
+echo -e "${YELLOW}│${NC}  ${GREEN}当前节点配置信息：${NC}"
+echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
 
-    echo -e "${YELLOW}│${NC}  域名: ${CYAN}$DISPLAY_DOMAIN${NC}"
-    echo -e "${YELLOW}│${NC}  路径: ${CYAN}$CONF_PATH${NC}"
-    echo -e "${YELLOW}│${NC}  UUID: ${CYAN}$CONF_UUID${NC}"
+echo -e "${YELLOW}│${NC}  域名: ${CYAN}$DISPLAY_DOMAIN${NC}"
+echo -e "${YELLOW}│${NC}  路径: ${CYAN}$CONF_PATH${NC}"
+echo -e "${YELLOW}│${NC}  UUID: ${CYAN}$CONF_UUID${NC}"
 
-    echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
-    echo -e "${YELLOW}│${NC}  ${BLUE}一键导入链接：${NC}"
+echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
+echo -e "${YELLOW}│${NC}  ${BLUE}一键导入链接：${NC}"
 
-    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$CONF_UUID@$DISPLAY_DOMAIN:443?path=$(echo $CONF_PATH | sed 's/\//%2F/g')&security=tls&encryption=none&type=ws&sni=$DISPLAY_DOMAIN&host=$DISPLAY_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
+echo -e "${YELLOW}│${NC}  ${WHITE}vless://$CONF_UUID@$DISPLAY_DOMAIN:443?path=$(echo $CONF_PATH | sed 's/\//%2F/g')&security=tls&encryption=none&type=ws&sni=$DISPLAY_DOMAIN&host=$DISPLAY_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
 
-    [ -z "$CONF_DOMAIN" ] && echo -e "${YELLOW}│${NC}  ${RED}注意：请手动替换 YOUR_DOMAIN${NC}"
+[ -z "$CONF_DOMAIN" ] && echo -e "${YELLOW}│${NC}  ${RED}注意：请手动替换 YOUR_DOMAIN${NC}"
 
-    echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
+echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
 
-    read -p "按回车键返回主菜单..."
+read -p "按回车键返回主菜单..."
 }
 
 # --- 诊断 ---
 diagnose() {
+clear
+echo -e "${BLUE}=== 链路诊断系统 ===${NC}"
 
-    clear
-    echo -e "${BLUE}=== 链路诊断系统 ===${NC}"
+systemctl is-active nginx >/dev/null 2>&1 && echo -e "Nginx:    ${GREEN}● 运行中${NC}" || echo -e "Nginx:    ${RED}○ 异常${NC}"
+systemctl is-active sing-box >/dev/null 2>&1 && echo -e "Sing-box: ${GREEN}● 运行中${NC}" || echo -e "Sing-box: ${RED}○ 异常${NC}"
 
-    systemctl is-active nginx >/dev/null 2>&1 && echo -e "Nginx:    ${GREEN}● 运行中${NC}" || echo -e "Nginx:    ${RED}○ 异常${NC}"
-    systemctl is-active sing-box >/dev/null 2>&1 && echo -e "Sing-box: ${GREEN}● 运行中${NC}" || echo -e "Sing-box: ${RED}○ 异常${NC}"
+echo -e "TCP 端口占用状况："
+ss -tulpn | grep -E 'nginx|sing-box|cloudflared'
 
-    echo -e "TCP 端口占用状况："
+read -p "按回车键返回主菜单..."
+}
 
-    ss -tulpn | grep -E 'nginx|sing-box|cloudflared'
+# --- 卸载 ---
+uninstall() {
 
-    read -p "按回车键返回主菜单..."
+echo -e "${RED}正在清理所有服务和配置...${NC}"
+
+systemctl stop cloudflared nginx sing-box >/dev/null 2>&1
+systemctl disable cloudflared nginx sing-box >/dev/null 2>&1
+
+pkill -9 cloudflared nginx sing-box >/dev/null 2>&1
+
+rm -rf /etc/systemd/system/cloudflared.service
+rm -rf /etc/systemd/system/sing-box.service
+rm -rf /etc/nginx/conf.d/tunnel.conf
+rm -rf /etc/sing-box/
+rm -f /tmp/cf_quick.log
+
+echo -e "${GREEN}卸载完成。${NC}"
+
+sleep 2
 }
 
 # --- 主菜单 ---
-while true
-do
+while true; do
 clear
 
 echo -e "${CYAN}┌─────────────────────────────────────────────────────┐${NC}"
@@ -238,22 +244,21 @@ echo -e "${CYAN}│${NC}  ${GREEN}1.${NC} 部署 Token 模式${NC}"
 echo -e "${CYAN}│${NC}  ${GREEN}2.${NC} 部署 临时隧道模式${NC}"
 echo -e "${CYAN}│${NC}  ${BLUE}3.${NC} 查看当前节点信息${NC}"
 echo -e "${CYAN}│${NC}  ${YELLOW}4.${NC} 链路诊断${NC}"
-echo -e "${CYAN}│${NC}  ${WHITE}5.${NC} 退出脚本${NC}"
+echo -e "${CYAN}│${NC}  ${RED}5.${NC} 彻底卸载${NC}"
+echo -e "${CYAN}│${NC}  ${WHITE}6.${NC} 退出脚本${NC}"
 
 echo -e "${CYAN}└─────────────────────────────────────────────────────┘${NC}"
 
-read -p "请选择序号: " opt
+read -p "请选择序号 [1-6]: " opt
 
 case $opt in
 1) deploy_token ;;
 2) deploy_quick ;;
 3) view_config ;;
 4) diagnose ;;
-5) exit ;;
-*)
-echo "输入错误"
-sleep 1
-;;
+5) uninstall ;;
+6) exit ;;
+*) echo "输入错误"; sleep 1 ;;
 esac
 
 done
