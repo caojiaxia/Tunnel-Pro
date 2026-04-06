@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Tunnel-Pro 
+# --- 0. 颜色定义 ---
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; WHITE='\033[1;37m'; NC='\033[0m'
 
-# --- 1. 核心辅助函数 ---
+# --- 1. 核心辅助函数定义 ---
 detect_os() {
     if [[ -f /etc/redhat-release ]]; then
         OS="CentOS"; PM="yum"
@@ -18,6 +18,15 @@ detect_os() {
     else
         OS="Unknown"; PM="apt"
     fi
+
+    # 架构检测，确保全系统兼容
+    local ARCH_RAW=$(uname -m)
+    case "${ARCH_RAW}" in
+        x86_64)  ARCH="amd64" ;;
+        aarch64) ARCH="arm64" ;;
+        armv7l)  ARCH="arm" ;;
+        *)       ARCH="amd64" ;;
+    esac
 }
 
 enable_bbr() {
@@ -32,6 +41,7 @@ enable_bbr() {
 # --- 2. 部署与配置逻辑 ---
 prepare_env() {
     echo -e "${BLUE}>>> 安装必要组件...${NC}"
+    # --- 这里保持你的原样，没问题 ---
     if [[ "$PM" == "apt" ]]; then
         apt update -y && apt install -y nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1
     elif [[ "$PM" == "yum" ]]; then
@@ -40,14 +50,32 @@ prepare_env() {
     elif [[ "$PM" == "pacman" ]]; then
         pacman -Sy --noconfirm nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1
     elif [[ "$PM" == "apk" ]]; then
-        # 核心：增加 grep 确保正则提取域名不报错，增加 libc6-compat 确保二进制运行
         apk update && apk add bash nginx curl wget jq net-tools psmisc tar libc6-compat openrc grep >/dev/null 2>&1
     fi
     enable_bbr
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
-    chmod +x /usr/local/bin/cloudflared
-}
 
+    # 修正 1：你的原本写法在没有运行 detect_os 的情况下，${ARCH} 是空的，会导致下载 404
+    # 确保 ARCH 变量有值
+    [ -z "$ARCH" ] && local ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+
+    curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" -o /usr/local/bin/cloudflared
+    chmod +x /usr/local/bin/cloudflared
+
+    echo -e "${BLUE}>>> 正在部署 Sing-box 核心...${NC}"
+    if [[ "$OS" == "Alpine" ]]; then
+        local SB_VER=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name | sed 's/v//')
+        curl -L "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${ARCH}.tar.gz" -o sb.tar.gz
+        tar -zxvf sb.tar.gz >/dev/null 2>&1
+        # 修正 2：这里加个路径通配符保护，防止解压目录名不符合预期
+        cp sing-box-*/sing-box /usr/bin/sing-box 2>/dev/null || cp sing-box/sing-box /usr/bin/sing-box 2>/dev/null
+        chmod +x /usr/bin/sing-box
+        rm -rf sb.tar.gz sing-box-*
+    else
+        # 修正 3：官方脚本在某些非 x86 环境下会因为识别不到 ARCH 而静默失败
+        # 建议这里不要加 >/dev/null 2>&1，否则安装失败了你完全不知道原因
+        bash -c "$(curl -L https://sing-box.app/install.sh)"
+    fi
+}
 config_services() {
     fuser -k $NAT_PORT/tcp >/dev/null 2>&1
     fuser -k $BACKEND_PORT/tcp >/dev/null 2>&1
@@ -60,19 +88,13 @@ config_services() {
         OLD_PATH=$(jq -r '.inbounds[0].transport.path' /etc/sing-box/config.json 2>/dev/null)
     fi
 
-    # 如果旧配置存在则沿用，否则生成新的
     UUID=${OLD_UUID:-$(cat /proc/sys/kernel/random/uuid)}
-    [ "$UUID" == "null" ] && UUID=$(cat /proc/sys/kernel/random/uuid)
-    [ -z "$UUID" ] && UUID=$(cat /proc/sys/kernel/random/uuid)
+    [[ "$UUID" == "null" || -z "$UUID" ]] && UUID=$(cat /proc/sys/kernel/random/uuid)
 
     PATH_WS=${OLD_PATH:-"/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"}
-    [ "$PATH_WS" == "null" ] && PATH_WS="/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"
-    [ -z "$PATH_WS" ] && PATH_WS="/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"
-    # ----------------------------
+    [[ "$PATH_WS" == "null" || -z "$PATH_WS" ]] && PATH_WS="/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"
 
-    # 安装 sing-box
-    bash -c "$(curl -L https://sing-box.app/install.sh)" >/dev/null 2>&1
-    
+    # 配置生成
     mkdir -p /etc/sing-box/
     cat <<EOF > /etc/sing-box/config.json
 {
@@ -84,19 +106,24 @@ config_services() {
   "outbounds": [{ "type": "direct" }]
 }
 EOF
-    SB_PATH=$(command -v sing-box)
 
-    # Sing-box 服务管理
+    # 自动识别路径
+    SB_PATH=$(command -v sing-box)
+    [ -z "$SB_PATH" ] && SB_PATH="/usr/bin/sing-box"
+
+    # Sing-box 服务管理 (根据 OS 类型切换)
     if [[ "$OS" == "Alpine" ]]; then
         cat <<EOF > /etc/init.d/sing-box
 #!/sbin/openrc-run
 name="sing-box"
+description="Sing-box Core Service"
 command="$SB_PATH"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
 pidfile="/run/sing-box.pid"
 depend() {
-    after network
+    need net
+    after firewall
 }
 EOF
         chmod +x /etc/init.d/sing-box
@@ -332,8 +359,8 @@ while true; do
     case $opt in
         1) deploy_token ;;
         2) deploy_quick ;;
-        3) view_config ;;
-        4) diagnose ;;
+        3) detect_os && view_config ;; 
+        4) detect_os && diagnose ;;
         5) uninstall ;;
         6) clear; exit 0 ;;
         *) echo -e "${RED}无效输入，请重新选择！${NC}"; sleep 1 ;;
