@@ -4,88 +4,89 @@
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'; WHITE='\033[1;37m'; NC='\033[0m'
 
 # --- 1. 核心辅助函数 ---
-detect_os() { 
-    if [[ -f /etc/redhat-release ]]; then 
-        OS="CentOS"; PM="yum" 
-    elif grep -qi "debian" /etc/issue || grep -qi "debian" /etc/os-release; then 
-        OS="Debian"; PM="apt" 
-    elif grep -qi "ubuntu" /etc/issue || grep -qi "ubuntu" /etc/os-release; then 
-        OS="Ubuntu"; PM="apt" 
-    elif grep -qi "arch" /etc/os-release; then 
+detect_os() {
+    if [[ -f /etc/redhat-release ]]; then
+        OS="CentOS"; PM="yum"
+    elif grep -qi "debian" /etc/os-release; then
+        OS="Debian"; PM="apt"
+    elif grep -qi "ubuntu" /etc/os-release; then
+        OS="Ubuntu"; PM="apt"
+    elif grep -qi "arch" /etc/os-release; then
         OS="Arch"; PM="pacman"
-    # === 新增 Alpine 分支 ===
-    elif grep -qi "alpine" /etc/os-release; then 
+    elif grep -qi "alpine" /etc/os-release; then
         OS="Alpine"; PM="apk"
-    else 
-        OS="Unknown"; PM="apt" 
-    fi 
+    else
+        OS="Unknown"; PM="apt"
+    fi
 }
 
 enable_bbr() {
     if ! lsmod | grep -q bbr; then
-        echo -e "${BLUE}>>> 正在开启 BBR 加速...${NC}"
+        echo -e "${BLUE}>>> 正在尝试开启 BBR 加速...${NC}"
         echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
         echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
         sysctl -p >/dev/null 2>&1
     fi
 }
 
-# --- 2. 部署与配置逻辑 --- 
-prepare_env() { 
-    echo -e "${BLUE}>>> 安装必要组件...${NC}" 
-    if [[ "$PM" == "apt" ]]; then 
-        apt update -y && apt install -y nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1 
-    elif [[ "$PM" == "yum" ]]; then 
-        yum install -y epel-release >/dev/null 2>&1 
-        yum install -y nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1 
-    elif [[ "$PM" == "pacman" ]]; then 
-        pacman -Sy --noconfirm nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1 
-    elif [[ "$PM" == "apk" ]]; then  
-        # 核心：增加 grep 确保正则提取域名不报错
-        apk update && apk add bash nginx curl wget jq net-tools psmisc tar libc6-compat openrc grep >/dev/null 2>&1 
-    fi 
-    enable_bbr 
-    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared 
-    chmod +x /usr/local/bin/cloudflared 
-} 
+# --- 2. 部署与配置逻辑 ---
+prepare_env() {
+    echo -e "${BLUE}>>> 安装必要组件...${NC}"
+    if [[ "$PM" == "apt" ]]; then
+        apt update -y && apt install -y nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1
+    elif [[ "$PM" == "yum" ]]; then
+        yum install -y epel-release >/dev/null 2>&1
+        yum install -y nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1
+    elif [[ "$PM" == "pacman" ]]; then
+        pacman -Sy --noconfirm nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1
+    elif [[ "$PM" == "apk" ]]; then
+        # 核心：增加 grep 确保正则提取域名不报错，增加 libc6-compat 确保二进制运行
+        apk update && apk add bash nginx curl wget jq net-tools psmisc tar libc6-compat openrc grep >/dev/null 2>&1
+    fi
+    enable_bbr
+    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+    chmod +x /usr/local/bin/cloudflared
+}
 
-config_services() { 
-    fuser -k $NAT_PORT/tcp >/dev/null 2>&1 
-    fuser -k $BACKEND_PORT/tcp >/dev/null 2>&1 
+config_services() {
+    fuser -k $NAT_PORT/tcp >/dev/null 2>&1
+    fuser -k $BACKEND_PORT/tcp >/dev/null 2>&1
 
-    # --- UUID 与 PATH 持久化逻辑 ---
+    # --- UUID & PATH 持久化逻辑 ---
     local OLD_UUID=""
     local OLD_PATH=""
     if [ -f /etc/sing-box/config.json ]; then
-        # 尝试从现有配置中提取 UUID 和 Path
         OLD_UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/sing-box/config.json 2>/dev/null)
         OLD_PATH=$(jq -r '.inbounds[0].transport.path' /etc/sing-box/config.json 2>/dev/null)
     fi
 
-    # 如果旧配置存在且合法，则沿用；否则生成新的
+    # 如果旧配置存在则沿用，否则生成新的
     UUID=${OLD_UUID:-$(cat /proc/sys/kernel/random/uuid)}
     [ "$UUID" == "null" ] && UUID=$(cat /proc/sys/kernel/random/uuid)
+    [ -z "$UUID" ] && UUID=$(cat /proc/sys/kernel/random/uuid)
 
     PATH_WS=${OLD_PATH:-"/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"}
     [ "$PATH_WS" == "null" ] && PATH_WS="/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"
-    # ------------------------------------
+    [ -z "$PATH_WS" ] && PATH_WS="/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 8)"
+    # ----------------------------
 
-    bash -c "$(curl -L https://sing-box.app/install.sh)" >/dev/null 2>&1 
-     
-    mkdir -p /etc/sing-box/ 
-    cat <<EOF > /etc/sing-box/config.json 
-{ 
-  "inbounds": [{ 
-    "type": "vless", "listen": "127.0.0.1", "listen_port": $BACKEND_PORT, 
-    "users": [{ "uuid": "$UUID" }], 
-    "transport": { "type": "ws", "path": "$PATH_WS" } 
-  }], 
-  "outbounds": [{ "type": "direct" }] 
-} 
-EOF 
-    SB_PATH=$(command -v sing-box) 
+    # 安装 sing-box
+    bash -c "$(curl -L https://sing-box.app/install.sh)" >/dev/null 2>&1
+    
+    mkdir -p /etc/sing-box/
+    cat <<EOF > /etc/sing-box/config.json
+{
+  "inbounds": [{
+    "type": "vless", "listen": "127.0.0.1", "listen_port": $BACKEND_PORT,
+    "users": [{ "uuid": "$UUID" }],
+    "transport": { "type": "ws", "path": "$PATH_WS" }
+  }],
+  "outbounds": [{ "type": "direct" }]
+}
+EOF
+    SB_PATH=$(command -v sing-box)
 
-    # --- Sing-box 服务守护 (兼容 systemd 与 OpenRC) ---
+    # Sing-box 服务管理
     if [[ "$OS" == "Alpine" ]]; then
         cat <<EOF > /etc/init.d/sing-box
 #!/sbin/openrc-run
@@ -102,54 +103,53 @@ EOF
         rc-update add sing-box default >/dev/null 2>&1
         rc-service sing-box restart >/dev/null 2>&1
     else
-        cat <<EOF > /etc/systemd/system/sing-box.service 
-[Unit] 
-Description=sing-box service 
-After=network.target 
-[Service] 
-ExecStart=$SB_PATH run -c /etc/sing-box/config.json 
-Restart=always 
-[Install] 
-WantedBy=multi-user.target 
-EOF 
-        systemctl daemon-reload && systemctl enable --now sing-box 
+        cat <<EOF > /etc/systemd/system/sing-box.service
+[Unit]
+Description=sing-box service
+After=network.target
+[Service]
+ExecStart=$SB_PATH run -c /etc/sing-box/config.json
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload && systemctl enable --now sing-box
     fi
 
-    # --- Nginx 停止、清理与重新配置 ---
+    # Nginx 停止与清理
     if [[ "$OS" == "Alpine" ]]; then
         rc-service nginx stop >/dev/null 2>&1
     else
-        systemctl stop nginx >/dev/null 2>&1 
+        systemctl stop nginx >/dev/null 2>&1
     fi
 
-    # 彻底分开清理指令与路径探测
     rm -rf /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*
-    MIME_PATH=$(find /etc/nginx -name mime.types | head -n 1) 
+    MIME_PATH=$(find /etc/nginx -name mime.types | head -n 1)
     [ -z "$MIME_PATH" ] && MIME_PATH="/etc/nginx/mime.types"
 
-    cat <<EOF > /etc/nginx/nginx.conf 
-user root; 
-worker_processes auto; 
-events { worker_connections 1024; } 
-http { 
-    include $MIME_PATH; 
-    map \$http_upgrade \$connection_upgrade { default upgrade; '' close; } 
-    server { 
-        listen $NAT_PORT; 
-        location $PATH_WS { 
-            proxy_redirect off; 
-            proxy_pass http://127.0.0.1:$BACKEND_PORT; 
-            proxy_http_version 1.1; 
-            proxy_set_header Upgrade \$http_upgrade; 
-            proxy_set_header Connection \$connection_upgrade; 
-            proxy_set_header Host \$host; 
-        } 
-        location / { return 200 "OK"; } 
-    } 
-} 
-EOF 
+    cat <<EOF > /etc/nginx/nginx.conf
+user root;
+worker_processes auto;
+events { worker_connections 1024; }
+http {
+    include $MIME_PATH;
+    map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
+    server {
+        listen $NAT_PORT;
+        location $PATH_WS {
+            proxy_redirect off;
+            proxy_pass http://127.0.0.1:$BACKEND_PORT;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection \$connection_upgrade;
+            proxy_set_header Host \$host;
+        }
+        location / { return 200 "OK"; }
+    }
+}
+EOF
 
-    # 重启 Nginx
+    # Nginx 重启
     if [[ "$OS" == "Alpine" ]]; then
         rc-service nginx restart >/dev/null 2>&1
     else
@@ -165,17 +165,14 @@ view_config() {
         return
     fi
 
-    # 1. 提取基础信息
     local CONF_UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/sing-box/config.json)
     local CONF_PATH=$(jq -r '.inbounds[0].transport.path' /etc/sing-box/config.json)
     
-    # 2. 智能域名检索
     local CONF_DOMAIN=""
-    # 优先从本地备份获取 (针对 Token 模式)
     if [ -f /etc/sing-box/.domain ]; then
         CONF_DOMAIN=$(cat /etc/sing-box/.domain)
-    # 其次从临时日志获取 (针对 Quick 模式)
     elif [ -f /tmp/cf_quick.log ]; then
+        # 基于已安装的 GNU grep 使用 -oP 提取
         CONF_DOMAIN=$(grep -oP '(?<=https://)[-0-9a-z.]*\.trycloudflare\.com' /tmp/cf_quick.log | head -n 1)
     fi
 
@@ -201,16 +198,12 @@ deploy_token() {
     echo -e "${CYAN}请输入您的 Cloudflare Tunnel 信息：${NC}"
     read -p "Token: " TOKEN
     read -p "域名 (example.com): " DOMAIN
-    # 备份域名
     echo "$DOMAIN" > /etc/sing-box/.domain
     
     read -p "后端端口 (默认3001): " BACKEND_PORT; BACKEND_PORT=${BACKEND_PORT:-3001}
     read -p "转发端口 (默认8080): " NAT_PORT; NAT_PORT=${NAT_PORT:-8080}
-    
-    # 先配置后端和 Nginx
     config_services
 
-    # --- Cloudflared 服务守护 (全系统兼容逻辑) ---
     if [[ "$OS" == "Alpine" ]]; then
         cat <<EOF > /etc/init.d/cloudflared
 #!/sbin/openrc-run
@@ -244,9 +237,7 @@ EOF
 
 deploy_quick() {
     detect_os && prepare_env
-    # 清理旧的备份
     rm -f /etc/sing-box/.domain
-    
     read -p "后端端口 (默认3001): " BACKEND_PORT; BACKEND_PORT=${BACKEND_PORT:-3001}
     read -p "转发端口 (默认8080): " NAT_PORT; NAT_PORT=${NAT_PORT:-8080}
     config_services
@@ -303,8 +294,7 @@ diagnose() {
 
 uninstall() { 
     echo -e "${RED}正在清理所有服务和配置...${NC}" 
-
-    # === 增加 OpenRC 服务清理分支 ===
+    detect_os
     if [[ "$OS" == "Alpine" ]]; then
         rc-service cloudflared stop >/dev/null 2>&1
         rc-service nginx stop >/dev/null 2>&1
@@ -318,10 +308,8 @@ uninstall() {
         systemctl disable cloudflared nginx sing-box >/dev/null 2>&1 
         rm -rf /etc/systemd/system/cloudflared.service /etc/systemd/system/sing-box.service 
     fi
-    
     pkill -9 cloudflared nginx sing-box >/dev/null 2>&1 
     rm -rf /etc/nginx/conf.d/tunnel.conf /etc/sing-box/ /tmp/cf_quick.log 
-    
     echo -e "${GREEN}卸载完成。${NC}" 
     sleep 2 
 }
@@ -332,16 +320,15 @@ while true; do
     echo -e "${CYAN}┌─────────────────────────────────────────────────────┐${NC}"
     echo -e "${CYAN}│${NC}           ${WHITE}BoGe-Tunnel-Pro 控制面板 (全系统兼容) ${NC}          ${CYAN}│${NC}"
     echo -e "${CYAN}├─────────────────────────────────────────────────────┤${NC}"
-    echo -e "${CYAN}│${NC}  ${GREEN}1.${NC} 部署 Token 模式 (自有域名/永久)${NC}               ${CYAN}│${NC}"
-    echo -e "${CYAN}│${NC}  ${GREEN}2.${NC} 部署 临时隧道模式 (无需域名/即开即用)${NC}           ${CYAN}│${NC}"
-    echo -e "${CYAN}│${NC}  ${BLUE}3.${NC} 查看当前节点信息${NC}                            ${CYAN}│${NC}"
-    echo -e "${CYAN}│${NC}  ${YELLOW}4.${NC} 链路诊断 (排查连接问题)${NC}                       ${CYAN}│${NC}"
-    echo -e "${CYAN}│${NC}  ${RED}5.${NC} 彻底卸载 (清空环境)${NC}                           ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${GREEN}1.${NC} 部署 Token 模式 (自有域名/永久)${NC}                ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${GREEN}2.${NC} 部署 临时隧道模式 (无需域名/即开即用)${NC}            ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${BLUE}3.${NC} 查看当前节点信息${NC}                             ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${YELLOW}4.${NC} 链路诊断 (排查连接问题)${NC}                        ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${RED}5.${NC} 彻底卸载 (清空环境)${NC}                            ${CYAN}│${NC}"
     echo -e "${CYAN}│${NC}  ${WHITE}6.${NC} 退出脚本${NC}                                     ${CYAN}│${NC}"
     echo -e "${CYAN}└─────────────────────────────────────────────────────┘${NC}"
     echo -n -e "${CYAN}请选择序号 [1-6]: ${NC}"
     read opt
-
     case $opt in
         1) deploy_token ;;
         2) deploy_quick ;;
