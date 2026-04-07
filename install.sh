@@ -41,7 +41,6 @@ enable_bbr() {
 # --- 2. 部署与配置逻辑 ---
 prepare_env() {
     echo -e "${BLUE}>>> 安装必要组件...${NC}"
-    # --- 这里保持你的原样，没问题 ---
     if [[ "$PM" == "apt" ]]; then
         apt update -y && apt install -y nginx curl wget jq net-tools psmisc tar >/dev/null 2>&1
     elif [[ "$PM" == "yum" ]]; then
@@ -54,8 +53,7 @@ prepare_env() {
     fi
     enable_bbr
 
-    # 修正 1：你的原本写法在没有运行 detect_os 的情况下，${ARCH} 是空的，会导致下载 404
-    # 确保 ARCH 变量有值
+    # 确保 ARCH 变量有值，防止下载 404
     [ -z "$ARCH" ] && local ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
 
     curl -L "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" -o /usr/local/bin/cloudflared
@@ -66,16 +64,19 @@ prepare_env() {
         local SB_VER=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name | sed 's/v//')
         curl -L "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${ARCH}.tar.gz" -o sb.tar.gz
         tar -zxvf sb.tar.gz >/dev/null 2>&1
-        # 修正 2：这里加个路径通配符保护，防止解压目录名不符合预期
+        # 路径通配符保护，适配不同版本的解压目录名
         cp sing-box-*/sing-box /usr/bin/sing-box 2>/dev/null || cp sing-box/sing-box /usr/bin/sing-box 2>/dev/null
         chmod +x /usr/bin/sing-box
         rm -rf sb.tar.gz sing-box-*
     else
-        # 修正 3：官方脚本在某些非 x86 环境下会因为识别不到 ARCH 而静默失败
-        # 建议这里不要加 >/dev/null 2>&1，否则安装失败了你完全不知道原因
+        # 针对 Debian/Ubuntu 系统的核心优化：
+        # 1. 解决交互弹窗：强制不弹出配置询问，自动保留旧配置
+        # 2. 移除静默输出：安装报错一眼可见
+        export DEBIAN_FRONTEND=noninteractive
         bash -c "$(curl -L https://sing-box.app/install.sh)"
     fi
 }
+
 config_services() {
     fuser -k $NAT_PORT/tcp >/dev/null 2>&1
     fuser -k $BACKEND_PORT/tcp >/dev/null 2>&1
