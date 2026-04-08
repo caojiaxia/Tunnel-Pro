@@ -193,18 +193,35 @@ view_config() {
         return
     fi
 
+    # 1. 提取核心配置信息
     local CONF_UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/sing-box/config.json)
     local CONF_PATH=$(jq -r '.inbounds[0].transport.path' /etc/sing-box/config.json)
     
+    # 2. 多重维度抓取域名 
     local CONF_DOMAIN=""
+    
     if [ -f /etc/sing-box/.domain ]; then
+        # 优先读取持久化记录的域名 (Token模式)
         CONF_DOMAIN=$(cat /etc/sing-box/.domain)
     elif [ -f /tmp/cf_quick.log ]; then
-        # 基于已安装的 GNU grep 使用 -oP 提取
-        CONF_DOMAIN=$(grep -oP '(?<=https://)[-0-9a-z.]*\.trycloudflare\.com' /tmp/cf_quick.log | head -n 1)
+        # 尝试从临时模式日志抓取
+        CONF_DOMAIN=$(grep -oE '[-0-9a-z.]*\.trycloudflare\.com' /tmp/cf_quick.log | head -n 1)
     fi
 
+    # 3. 兜底方案：如果上述都失败，尝试从运行中的进程或配置实时提取
+    if [ -z "$CONF_DOMAIN" ]; then
+        # 尝试从 Nginx 配置抓取 Host (如果是精准配置的话)
+        CONF_DOMAIN=$(grep -oP '(?<=server_name )[-0-9a-z.]+' /etc/nginx/conf.d/tunnel.conf 2>/dev/null | head -n 1)
+        # 如果还是空，尝试抓取 cloudflared 正在运行的临时域名
+        if [ -z "$CONF_DOMAIN" ]; then
+             CONF_DOMAIN=$(ps aux | grep -oE '[-0-9a-z.]*\.trycloudflare\.com' | head -n 1)
+        fi
+    fi
+
+    # 4. 最终显示处理
     local DISPLAY_DOMAIN=${CONF_DOMAIN:-"YOUR_DOMAIN"}
+    # 处理路径中的斜杠，确保链接格式正确
+    local ENCODED_PATH=$(echo "$CONF_PATH" | sed 's/\//%2F/g')
 
     echo -e "\n${YELLOW}┌─────────────────────────────────────────────────────┐${NC}"
     echo -e "${YELLOW}│${NC}  ${GREEN}当前节点配置信息：${NC}"
@@ -214,8 +231,13 @@ view_config() {
     echo -e "${YELLOW}│${NC}  UUID: ${CYAN}$CONF_UUID${NC}"
     echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
     echo -e "${YELLOW}│${NC}  ${BLUE}一键导入链接：${NC}"
-    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$CONF_UUID@$DISPLAY_DOMAIN:443?path=$(echo $CONF_PATH | sed 's/\//%2F/g')&security=tls&encryption=none&type=ws&sni=$DISPLAY_DOMAIN&host=$DISPLAY_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
-    [ -z "$CONF_DOMAIN" ] && echo -e "${YELLOW}│${NC}  ${RED}注意：由于是全新运行，请手动替换链接中的 YOUR_DOMAIN${NC}"
+    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$CONF_UUID@$DISPLAY_DOMAIN:443?path=$ENCODED_PATH&security=tls&encryption=none&type=ws&sni=$DISPLAY_DOMAIN&host=$DISPLAY_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
+    
+    if [ "$DISPLAY_DOMAIN" == "YOUR_DOMAIN" ]; then
+        echo -e "${YELLOW}│${NC}  ${RED}注意：无法自动获取域名，请手动替换链接中的 YOUR_DOMAIN${NC}"
+    else
+        echo -e "${YELLOW}│${NC}  ${GREEN}提示：链接已自动生成，可直接复制使用。${NC}"
+    fi
     echo -e "${YELLOW}└─────────────────────────────────────────────────────┘${NC}"
     read -p "按回车键返回主菜单..."
 }
