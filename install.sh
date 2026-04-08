@@ -231,7 +231,8 @@ view_config() {
     echo -e "${YELLOW}│${NC}  UUID: ${CYAN}$CONF_UUID${NC}"
     echo -e "${YELLOW}├─────────────────────────────────────────────────────┤${NC}"
     echo -e "${YELLOW}│${NC}  ${BLUE}一键导入链接：${NC}"
-    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$CONF_UUID@$DISPLAY_DOMAIN:443?path=$ENCODED_PATH&security=tls&encryption=none&type=ws&sni=$DISPLAY_DOMAIN&host=$DISPLAY_DOMAIN&fp=chrome#Tunnel-Pro${NC}"
+    # 修正后的链接生成逻辑
+    echo -e "${YELLOW}│${NC}  ${WHITE}vless://$CONF_UUID@$DISPLAY_DOMAIN:443?path=$ENCODED_PATH&security=tls&encryption=none&type=ws&sni=$DISPLAY_DOMAIN&host=$DISPLAY_DOMAIN&fp=chrome&alpn=h2,http/1.1#Tunnel-Pro${NC}"
     
     if [ "$DISPLAY_DOMAIN" == "YOUR_DOMAIN" ]; then
         echo -e "${YELLOW}│${NC}  ${RED}注意：无法自动获取域名，请手动替换链接中的 YOUR_DOMAIN${NC}"
