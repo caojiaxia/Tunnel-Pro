@@ -12,7 +12,7 @@ Tunnel-Pro 旨在通过 Cloudflare Tunnel 与 Nginx 反代技术，为 VPS 提�
 * **智能自愈**：全流程 Systemd 守护，自动重启机制，部署后即实现“无人值守”。
 * **自动加速**：检测并自动开启 TCP BBR 加速。
 * **一键维护**：集成日志查看与全流程卸载功能。
-* **系统适配**：智能检测 Debian/Ubuntu (APT) CentOS等主流系统。
+* **系统适配**：智能检测 Debian/Ubuntu (APT) CentOS Alpine等主流系统。
 
 ---
 
